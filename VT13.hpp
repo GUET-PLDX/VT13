@@ -10,7 +10,7 @@ constructor_args:
   - thread_priority_uart: LibXR::Thread::Priority::HIGH
 required_hardware: vt13 dma uart
 depends:
-  - qdu-future/CMD
+  - pldx/CMD
 === END MANIFEST === */
 // clang-format on
 
