@@ -461,16 +461,16 @@ class VT13 : public LibXR::Application {
       }
 
       if (curr_rc.key & RawValue(Key::KEY_A)) {
-        output_data.chassis.x -= 1.0f;
+        output_data.chassis.operator_input.x -= 1.0f;
       }
       if (curr_rc.key & RawValue(Key::KEY_D)) {
-        output_data.chassis.x += 1.0f;
+        output_data.chassis.operator_input.x += 1.0f;
       }
       if (curr_rc.key & RawValue(Key::KEY_S)) {
-        output_data.chassis.y -= 1.0f;
+        output_data.chassis.operator_input.y -= 1.0f;
       }
       if (curr_rc.key & RawValue(Key::KEY_W)) {
-        output_data.chassis.y += 1.0f;
+        output_data.chassis.operator_input.y += 1.0f;
       }
 
       if (curr_rc.key & RawValue(Key::KEY_SHIFT)) {
@@ -478,7 +478,7 @@ class VT13 : public LibXR::Application {
       } else {
         output_data.chassis.self_define = CMD::ChasStat::NONE;
       }
-      output_data.chassis.z = 0.0f;
+      output_data.chassis.operator_input.z = 0.0f;
 
       output_data.gimbal.pit = static_cast<float>(curr_rc.y) * MOUSE_SCALER;
       output_data.gimbal.yaw = static_cast<float>(curr_rc.x) * MOUSE_SCALER;
@@ -491,13 +491,13 @@ class VT13 : public LibXR::Application {
       }
     } else {
       /* 遥控器模式 */
-      output_data.chassis.x =
+      output_data.chassis.operator_input.x =
           2.0f * (static_cast<float>(curr_rc.ch_l_y) - VT13_CH_VALUE_MID) *
           INV_FULL_RANGE;
-      output_data.chassis.y =
+      output_data.chassis.operator_input.y =
           2.0f * (static_cast<float>(curr_rc.ch_l_x) - VT13_CH_VALUE_MID) *
           INV_FULL_RANGE;
-      output_data.chassis.z =
+      output_data.chassis.operator_input.z =
           2.0f * (static_cast<float>(curr_rc.ch_r_x) - VT13_CH_VALUE_MID) *
           INV_FULL_RANGE;
       output_data.chassis.self_define = CMD::ChasStat::NONE;
@@ -531,9 +531,9 @@ class VT13 : public LibXR::Application {
    * @details 将控制量归零并标记离线，防止链路中断时保持危险状态
    */
   void Offline() {
-    this->cmd_data_.chassis.x = 0;
-    this->cmd_data_.chassis.y = 0;
-    this->cmd_data_.chassis.z = 0;
+    this->cmd_data_.chassis.operator_input.x = 0;
+    this->cmd_data_.chassis.operator_input.y = 0;
+    this->cmd_data_.chassis.operator_input.z = 0;
     this->cmd_data_.chassis.self_define = CMD::ChasStat::NONE;
 
     this->cmd_data_.gimbal.yaw = 0;
