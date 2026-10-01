@@ -189,7 +189,7 @@ class VT13 : public LibXR::Application {
        LibXR::Thread::Priority thread_priority_uart =
            LibXR::Thread::Priority::HIGH)
       : cmd_(&cmd),
-        uart_(hw.Find<LibXR::UART>("uart_ext_controller")),
+        uart_(hw.template FindOrExit<LibXR::UART>({"uart_ext_controller"})),
         sem_(0),
         op_(sem_, 64) {
     uart_->SetConfig({921600, LibXR::UART::Parity::NO_PARITY, 8, 1});
