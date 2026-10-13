@@ -1,24 +1,18 @@
 #pragma once
 
 /* clang-format off */
-/* === MODULE MANIFEST ===
-module_name: VT13
-module_description: VT13 link receiver parsing
-constructor_args:
-  - CMD: '@cmd'
-  - task_stack_depth_uart: 1536
-  - thread_priority_uart: LibXR::Thread::Priority::HIGH
-required_hardware: vt13 dma uart
+/* === MODULE MANIFEST V2 ===
+module_description: Receiver parsing
 depends:
-  - pldx/CMD
+  - id: GUET-PLDX/CMD
 === END MANIFEST === */
 // clang-format on
 
 #include <cstdint>
 
 #include "CMD.hpp"
-#include "app_framework.hpp"
 #include "crc.hpp"
+#include "libxr.hpp"
 #include "uart.hpp"
 
 #define VT13_FRAME_HEAD_0 (0xA9u)
@@ -35,7 +29,7 @@ depends:
  * @class VT13
  * @brief VT13链路接收机数据解析类
  */
-class VT13 : public LibXR::Application {
+class VT13 {
  public:
   static constexpr std::size_t VT13_FRAME_SIZE = 21;
   static constexpr std::size_t VT13_PAYLOAD_SIZE_FOR_CRC = 19;
@@ -178,25 +172,18 @@ class VT13 : public LibXR::Application {
 
   /**
    * @brief VT13构造函数
-   * @param hw 硬件容器引用
-   * @param app 应用管理器引用
    * @param cmd 控制命令对象引用
    * @param task_stack_depth_uart UART任务栈深度
    * @param thread_priority_uart UART线程优先级
    */
-  VT13(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, CMD& cmd,
-       uint32_t task_stack_depth_uart,
+  VT13(LibXR::UART& uart, CMD& cmd, uint32_t task_stack_depth_uart,
        LibXR::Thread::Priority thread_priority_uart =
            LibXR::Thread::Priority::HIGH)
-      : cmd_(&cmd),
-        uart_(hw.template FindOrExit<LibXR::UART>({"uart_ext_controller"})),
-        sem_(0),
-        op_(sem_, 64) {
+      : cmd_(&cmd), uart_((&uart)), sem_(0), op_(sem_, 64) {
     uart_->SetConfig({921600, LibXR::UART::Parity::NO_PARITY, 8, 1});
     /* 创建UART线程 */
     thread_uart_.Create(this, ThreadVT13, "uart_vt13", task_stack_depth_uart,
                         thread_priority_uart);
-    app.Register(*this);
   }
 
   /**
@@ -208,7 +195,7 @@ class VT13 : public LibXR::Application {
   /**
    * @brief 监控回调
    */
-  void OnMonitor() override {}
+  void OnMonitor() {}
 
   /**
    * @brief VT13 UART读取线程
