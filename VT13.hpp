@@ -4,7 +4,7 @@
 /* === MODULE MANIFEST V2 ===
 module_description: VT13 link receiver parsing
 depends:
-- pldx/CMD@master
+- pldx/CMD@mc02-static
 === END MANIFEST === */
 // clang-format on
 
