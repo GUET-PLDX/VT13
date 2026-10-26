@@ -4,7 +4,7 @@
 /* === MODULE MANIFEST V2 ===
 module_description: Receiver parsing
 depends:
-  - id: GUET-PLDX/CMD
+- id: GUET-PLDX/CMD
 === END MANIFEST === */
 // clang-format on
 
@@ -176,10 +176,10 @@ class VT13 {
    * @param task_stack_depth_uart UART任务栈深度
    * @param thread_priority_uart UART线程优先级
    */
-  VT13(LibXR::UART& uart, CMD& cmd, uint32_t task_stack_depth_uart,
+  VT13(LibXR::UART& uart, CMD& cmd, uint32_t task_stack_depth_uart = 1536,
        LibXR::Thread::Priority thread_priority_uart =
            LibXR::Thread::Priority::HIGH)
-      : cmd_(&cmd), uart_((&uart)), sem_(0), op_(sem_, 64) {
+      : cmd_(&cmd), uart_(&uart), sem_(0), op_(sem_, 64) {
     uart_->SetConfig({921600, LibXR::UART::Parity::NO_PARITY, 8, 1});
     /* 创建UART线程 */
     thread_uart_.Create(this, ThreadVT13, "uart_vt13", task_stack_depth_uart,
