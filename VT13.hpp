@@ -8,6 +8,7 @@ depends:
 === END MANIFEST === */
 // clang-format on
 
+#include <algorithm>
 #include <cstdint>
 
 #include "CMD.hpp"
@@ -251,12 +252,259 @@ class VT13 {
   }
 
   /**
-   * @brief 解析VT13原始帧并生成CMD控制数据
+   * @brief 解析 VT13 原始帧，生成 CMD 控制数据并触发绑定事件
    * @param raw_data 21字节原始缓冲
    * @param output_data 解析后的CMD数据
    * @return LibXR::ErrorCode::OK 解析成功；其他值表示校验或数据范围异常
    */
   LibXR::ErrorCode ParseRC(const uint8_t* raw_data, CMD::Data& output_data) {
+    Data curr_rc{};
+    const auto result = DecodeRaw(raw_data, curr_rc);
+    if (result != LibXR::ErrorCode::OK) return result;
+    {
+      output_data = CMD::Data();
+
+      /* 断链恢复后的首帧仅用于建立边沿基线，避免误触发事件 */
+      if (this->offline_latched_) {
+        this->last_data_ = curr_rc;
+        this->offline_latched_ = false;
+        vt13_event_.Active(static_cast<uint32_t>(SwitchPos::VT13_SW_POS_C) +
+                           curr_rc.sw);
+      }
+
+      /* 检测挡位切换开关 */
+      if (curr_rc.sw != this->last_data_.sw) {
+        this->vt13_event_.Active(
+            static_cast<uint32_t>(SwitchPos::VT13_SW_POS_C) + curr_rc.sw);
+      }
+
+      /* 检测其余自定义按键 */
+      if (curr_rc.key_l && !this->last_data_.key_l) {
+        this->vt13_event_.Active(
+            static_cast<uint32_t>(SwitchPos::VT13_KEY_PRESSED_L));
+
+        this->fric_enable_ = !this->fric_enable_;
+        if (this->fric_enable_) {
+          this->vt13_event_.Active(
+              static_cast<uint32_t>(SwitchPos::VT13_KEY_CUSTOM_L_TOGGLE_ON));
+        } else {
+          this->vt13_event_.Active(
+              static_cast<uint32_t>(SwitchPos::VT13_KEY_CUSTOM_L_TOGGLE_OFF));
+        }
+      }
+
+      if (curr_rc.key_r && !this->last_data_.key_r) {
+        this->vt13_event_.Active(
+            static_cast<uint32_t>(SwitchPos::VT13_KEY_PRESSED_R));
+
+        this->ai_mode_enable_ = !this->ai_mode_enable_;
+        if (this->ai_mode_enable_) {
+          this->vt13_event_.Active(
+              static_cast<uint32_t>(SwitchPos::VT13_KEY_CUSTOM_R_TOGGLE_ON));
+        } else {
+          this->vt13_event_.Active(
+              static_cast<uint32_t>(SwitchPos::VT13_KEY_CUSTOM_R_TOGGLE_OFF));
+        }
+      }
+
+      if (curr_rc.pause && !this->last_data_.pause) {
+        this->vt13_event_.Active(
+            static_cast<uint32_t>(SwitchPos::VT13_KEY_PRESSED_PAUSED));
+
+        if (this->ai_mode_enable_) {
+          this->gimbal_enable_ = false;
+        } else {
+          this->gimbal_enable_ = !this->gimbal_enable_;
+        }
+
+        if (this->gimbal_enable_) {
+          this->vt13_event_.Active(
+              static_cast<uint32_t>(SwitchPos::VT13_KEY_PAUSE_TOGGLE_ON));
+        } else {
+          this->vt13_event_.Active(
+              static_cast<uint32_t>(SwitchPos::VT13_KEY_PAUSE_TOGGLE_OFF));
+        }
+      }
+
+      if (curr_rc.trig && !this->last_data_.trig) {
+        this->vt13_event_.Active(
+            static_cast<uint32_t>(SwitchPos::VT13_KEY_PRESSED_TRIG));
+      }
+
+      if (!curr_rc.key_l && this->last_data_.key_l) {
+        this->vt13_event_.Active(
+            static_cast<uint32_t>(SwitchPos::VT13_KEY_RELEASE_L));
+      }
+      if (!curr_rc.key_r && this->last_data_.key_r) {
+        this->vt13_event_.Active(
+            static_cast<uint32_t>(SwitchPos::VT13_KEY_RELEASE_R));
+      }
+      if (!curr_rc.pause && this->last_data_.pause) {
+        this->vt13_event_.Active(
+            static_cast<uint32_t>(SwitchPos::VT13_KEY_RELEASE_PAUSED));
+      }
+      if (!curr_rc.trig && this->last_data_.trig) {
+        this->vt13_event_.Active(
+            static_cast<uint32_t>(SwitchPos::VT13_KEY_RELEASE_TRIG));
+      }
+
+      this->ActiveDialTouchEvent(curr_rc.dial);
+
+      /* 检测Shift/Ctrl */
+      uint32_t tmp = 0;
+      if (curr_rc.key & RawValue(Key::KEY_SHIFT)) {
+        tmp += static_cast<uint32_t>(Key::KEY_NUM);
+      }
+      if (curr_rc.key & RawValue(Key::KEY_CTRL)) {
+        tmp += 2 * static_cast<uint32_t>(Key::KEY_NUM);
+      }
+
+      for (int i = 0; i < 16; i++) {
+        if ((curr_rc.key & (1u << i)) && !(this->last_data_.key & (1u << i))) {
+          this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_W) + i + tmp);
+        }
+      }
+
+      const uint16_t COMBO_SW = RawValue(Key::KEY_SHIFT) |
+                                RawValue(Key::KEY_CTRL) | RawValue(Key::KEY_Q);
+      const uint16_t COMBO_MOUSE = RawValue(Key::KEY_SHIFT) |
+                                   RawValue(Key::KEY_CTRL) |
+                                   RawValue(Key::KEY_E);
+
+      /* Shift+Ctrl+Q/E 控制源切换 */
+      if ((curr_rc.key & COMBO_SW) == COMBO_SW) {
+        this->ctrl_source_ = ControlSource::VT13_CTRL_SOURCE_SW;
+      }
+      if ((curr_rc.key & COMBO_MOUSE) == COMBO_MOUSE) {
+        this->ctrl_source_ = ControlSource::VT13_CTRL_SOURCE_MOUSE;
+      }
+
+      constexpr float FULL_RANGE =
+          static_cast<float>(VT13_CH_VALUE_MAX - VT13_CH_VALUE_MIN);
+      constexpr float INV_FULL_RANGE = 1.0f / FULL_RANGE;
+      constexpr float MOUSE_SCALER = 1000.0f / 32768.0f;
+
+      if (this->ctrl_source_ == ControlSource::VT13_CTRL_SOURCE_MOUSE) {
+        if (curr_rc.press_l && !this->last_data_.press_l) {
+          this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_L_PRESS));
+        }
+        if (curr_rc.press_r && !this->last_data_.press_r) {
+          this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_R_PRESS));
+        }
+        if (curr_rc.press_m && !this->last_data_.press_m) {
+          this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_M_PRESS));
+        }
+        if (!curr_rc.press_l && this->last_data_.press_l) {
+          this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_L_RELEASE));
+        }
+        if (!curr_rc.press_r && this->last_data_.press_r) {
+          this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_R_RELEASE));
+        }
+        if (!curr_rc.press_m && this->last_data_.press_m) {
+          this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_M_RELEASE));
+        }
+
+        if (curr_rc.key & RawValue(Key::KEY_A)) {
+          output_data.chassis.vx -= 1.0f;
+        }
+        if (curr_rc.key & RawValue(Key::KEY_D)) {
+          output_data.chassis.vx += 1.0f;
+        }
+        if (curr_rc.key & RawValue(Key::KEY_S)) {
+          output_data.chassis.vy -= 1.0f;
+        }
+        if (curr_rc.key & RawValue(Key::KEY_W)) {
+          output_data.chassis.vy += 1.0f;
+        }
+
+        if (curr_rc.key & RawValue(Key::KEY_SHIFT)) {
+          output_data.chassis.self_define = CMD::ChasStat::BOOST;
+        } else {
+          output_data.chassis.self_define = CMD::ChasStat::NONE;
+        }
+        output_data.chassis.wz = 0.0f;
+
+        output_data.gimbal.pit = static_cast<float>(curr_rc.y) * MOUSE_SCALER;
+        output_data.gimbal.yaw = static_cast<float>(curr_rc.x) * MOUSE_SCALER;
+        output_data.gimbal.rol = 0.0f;
+
+        if (curr_rc.press_l != 0) {
+          output_data.launcher.isfire = true;
+        } else {
+          output_data.launcher.isfire = false;
+        }
+      } else {
+        /* 遥控器模式 */
+        output_data.chassis.vx =
+            2.0f * (static_cast<float>(curr_rc.ch_l_y) - VT13_CH_VALUE_MID) *
+            INV_FULL_RANGE;
+        output_data.chassis.vy =
+            2.0f * (static_cast<float>(curr_rc.ch_l_x) - VT13_CH_VALUE_MID) *
+            INV_FULL_RANGE;
+        output_data.chassis.wz =
+            2.0f * (static_cast<float>(curr_rc.ch_r_x) - VT13_CH_VALUE_MID) *
+            INV_FULL_RANGE;
+        output_data.chassis.self_define = CMD::ChasStat::NONE;
+
+        output_data.gimbal.yaw =
+            2.0f * (static_cast<float>(curr_rc.ch_r_x) - VT13_CH_VALUE_MID) *
+            INV_FULL_RANGE;
+        output_data.gimbal.pit =
+            2.0f * (static_cast<float>(curr_rc.ch_r_y) - VT13_CH_VALUE_MID) *
+            INV_FULL_RANGE;
+        output_data.gimbal.rol = 0.0f;
+
+        if (curr_rc.trig != 0) {
+          output_data.launcher.isfire = true;
+        } else {
+          output_data.launcher.isfire = false;
+        }
+      }
+
+      output_data.chassis_online = true;
+      output_data.gimbal_online = true;
+      output_data.ctrl_source = CMD::ControlSource::CTRL_SOURCE_RC;
+
+      this->last_data_ = curr_rc;
+    }
+
+    return LibXR::ErrorCode::OK;
+  }
+
+  /**
+   * @brief 离线安全输出
+   * @details 将控制量归零并标记离线，防止链路中断时保持危险状态
+   */
+  void Offline() {
+    this->cmd_data_.chassis.vx = 0;
+    this->cmd_data_.chassis.vy = 0;
+    this->cmd_data_.chassis.wz = 0;
+    this->cmd_data_.chassis.self_define = CMD::ChasStat::NONE;
+
+    this->cmd_data_.gimbal.yaw = 0;
+    this->cmd_data_.gimbal.pit = 0;
+    this->cmd_data_.gimbal.rol = 0;
+
+    this->cmd_data_.launcher.isfire = false;
+
+    this->cmd_data_.chassis_online = false;
+    this->cmd_data_.gimbal_online = false;
+
+    this->gimbal_enable_ = false;
+    this->fric_enable_ = false;
+    this->ai_mode_enable_ = false;
+    /* 清除拨轮触碰中间态，避免离线恢复后误触发短触/长触事件 */
+    this->dial_up_active_ = false;
+    this->dial_up_long_triggered_ = false;
+
+    this->last_data_ = Data{};
+    this->offline_latched_ = true;
+
+    this->cmd_->FeedRC(CMD::RCInputSource::RC_INPUT_VT13, this->cmd_data_);
+  }
+
+ private:
+  LibXR::ErrorCode DecodeRaw(const uint8_t* raw_data, Data& curr_rc) {
     if (!raw_data) {
       return LibXR::ErrorCode::PTR_NULL;
     }
@@ -271,8 +519,6 @@ class VT13 {
     if (!CRC_OK) {
       return LibXR::ErrorCode::CHECK_ERR;
     }
-
-    Data curr_rc{};
 
     curr_rc.ch_r_x = static_cast<uint16_t>(ExtractBits(raw_data, 16, 11));
     curr_rc.ch_r_y = static_cast<uint16_t>(ExtractBits(raw_data, 27, 11));
@@ -308,244 +554,8 @@ class VT13 {
       return LibXR::ErrorCode::CHECK_ERR;
     }
 
-    output_data = CMD::Data();
-
-    /* 断链恢复后的首帧仅用于建立边沿基线，避免误触发事件 */
-    if (this->offline_latched_) {
-      this->last_data_ = curr_rc;
-      this->offline_latched_ = false;
-    }
-
-    /* 检测挡位切换开关 */
-    if (curr_rc.sw != this->last_data_.sw) {
-      this->vt13_event_.Active(static_cast<uint32_t>(SwitchPos::VT13_SW_POS_C) +
-                               curr_rc.sw);
-    }
-
-    /* 检测其余自定义按键 */
-    if (curr_rc.key_l && !this->last_data_.key_l) {
-      this->vt13_event_.Active(
-          static_cast<uint32_t>(SwitchPos::VT13_KEY_PRESSED_L));
-
-      this->fric_enable_ = !this->fric_enable_;
-      if (this->fric_enable_) {
-        this->vt13_event_.Active(
-            static_cast<uint32_t>(SwitchPos::VT13_KEY_CUSTOM_L_TOGGLE_ON));
-      } else {
-        this->vt13_event_.Active(
-            static_cast<uint32_t>(SwitchPos::VT13_KEY_CUSTOM_L_TOGGLE_OFF));
-      }
-    }
-
-    if (curr_rc.key_r && !this->last_data_.key_r) {
-      this->vt13_event_.Active(
-          static_cast<uint32_t>(SwitchPos::VT13_KEY_PRESSED_R));
-
-      this->ai_mode_enable_ = !this->ai_mode_enable_;
-      if (this->ai_mode_enable_) {
-        this->vt13_event_.Active(
-            static_cast<uint32_t>(SwitchPos::VT13_KEY_CUSTOM_R_TOGGLE_ON));
-      } else {
-        this->vt13_event_.Active(
-            static_cast<uint32_t>(SwitchPos::VT13_KEY_CUSTOM_R_TOGGLE_OFF));
-      }
-    }
-
-    if (curr_rc.pause && !this->last_data_.pause) {
-      this->vt13_event_.Active(
-          static_cast<uint32_t>(SwitchPos::VT13_KEY_PRESSED_PAUSED));
-
-      if (this->ai_mode_enable_) {
-        this->gimbal_enable_ = false;
-      } else {
-        this->gimbal_enable_ = !this->gimbal_enable_;
-      }
-
-      if (this->gimbal_enable_) {
-        this->vt13_event_.Active(
-            static_cast<uint32_t>(SwitchPos::VT13_KEY_PAUSE_TOGGLE_ON));
-      } else {
-        this->vt13_event_.Active(
-            static_cast<uint32_t>(SwitchPos::VT13_KEY_PAUSE_TOGGLE_OFF));
-      }
-    }
-
-    if (curr_rc.trig && !this->last_data_.trig) {
-      this->vt13_event_.Active(
-          static_cast<uint32_t>(SwitchPos::VT13_KEY_PRESSED_TRIG));
-    }
-
-    if (!curr_rc.key_l && this->last_data_.key_l) {
-      this->vt13_event_.Active(
-          static_cast<uint32_t>(SwitchPos::VT13_KEY_RELEASE_L));
-    }
-    if (!curr_rc.key_r && this->last_data_.key_r) {
-      this->vt13_event_.Active(
-          static_cast<uint32_t>(SwitchPos::VT13_KEY_RELEASE_R));
-    }
-    if (!curr_rc.pause && this->last_data_.pause) {
-      this->vt13_event_.Active(
-          static_cast<uint32_t>(SwitchPos::VT13_KEY_RELEASE_PAUSED));
-    }
-    if (!curr_rc.trig && this->last_data_.trig) {
-      this->vt13_event_.Active(
-          static_cast<uint32_t>(SwitchPos::VT13_KEY_RELEASE_TRIG));
-    }
-
-    this->ActiveDialTouchEvent(curr_rc.dial);
-
-    /* 检测Shift/Ctrl */
-    uint32_t tmp = 0;
-    if (curr_rc.key & RawValue(Key::KEY_SHIFT)) {
-      tmp += static_cast<uint32_t>(Key::KEY_NUM);
-    }
-    if (curr_rc.key & RawValue(Key::KEY_CTRL)) {
-      tmp += 2 * static_cast<uint32_t>(Key::KEY_NUM);
-    }
-
-    for (int i = 0; i < 16; i++) {
-      if ((curr_rc.key & (1u << i)) && !(this->last_data_.key & (1u << i))) {
-        this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_W) + i + tmp);
-      }
-    }
-
-    const uint16_t COMBO_SW = RawValue(Key::KEY_SHIFT) |
-                              RawValue(Key::KEY_CTRL) | RawValue(Key::KEY_Q);
-    const uint16_t COMBO_MOUSE = RawValue(Key::KEY_SHIFT) |
-                                 RawValue(Key::KEY_CTRL) | RawValue(Key::KEY_E);
-
-    /* Shift+Ctrl+Q/E 控制源切换 */
-    if ((curr_rc.key & COMBO_SW) == COMBO_SW) {
-      this->ctrl_source_ = ControlSource::VT13_CTRL_SOURCE_SW;
-    }
-    if ((curr_rc.key & COMBO_MOUSE) == COMBO_MOUSE) {
-      this->ctrl_source_ = ControlSource::VT13_CTRL_SOURCE_MOUSE;
-    }
-
-    constexpr float FULL_RANGE =
-        static_cast<float>(VT13_CH_VALUE_MAX - VT13_CH_VALUE_MIN);
-    constexpr float INV_FULL_RANGE = 1.0f / FULL_RANGE;
-    constexpr float MOUSE_SCALER = 1000.0f / 32768.0f;
-
-    if (this->ctrl_source_ == ControlSource::VT13_CTRL_SOURCE_MOUSE) {
-      if (curr_rc.press_l && !this->last_data_.press_l) {
-        this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_L_PRESS));
-      }
-      if (curr_rc.press_r && !this->last_data_.press_r) {
-        this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_R_PRESS));
-      }
-      if (curr_rc.press_m && !this->last_data_.press_m) {
-        this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_M_PRESS));
-      }
-      if (!curr_rc.press_l && this->last_data_.press_l) {
-        this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_L_RELEASE));
-      }
-      if (!curr_rc.press_r && this->last_data_.press_r) {
-        this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_R_RELEASE));
-      }
-      if (!curr_rc.press_m && this->last_data_.press_m) {
-        this->vt13_event_.Active(static_cast<uint32_t>(Key::KEY_M_RELEASE));
-      }
-
-      if (curr_rc.key & RawValue(Key::KEY_A)) {
-        output_data.chassis.operator_input.x -= 1.0f;
-      }
-      if (curr_rc.key & RawValue(Key::KEY_D)) {
-        output_data.chassis.operator_input.x += 1.0f;
-      }
-      if (curr_rc.key & RawValue(Key::KEY_S)) {
-        output_data.chassis.operator_input.y -= 1.0f;
-      }
-      if (curr_rc.key & RawValue(Key::KEY_W)) {
-        output_data.chassis.operator_input.y += 1.0f;
-      }
-
-      if (curr_rc.key & RawValue(Key::KEY_SHIFT)) {
-        output_data.chassis.self_define = CMD::ChasStat::BOOST;
-      } else {
-        output_data.chassis.self_define = CMD::ChasStat::NONE;
-      }
-      output_data.chassis.operator_input.z = 0.0f;
-
-      output_data.gimbal.pit = static_cast<float>(curr_rc.y) * MOUSE_SCALER;
-      output_data.gimbal.yaw = static_cast<float>(curr_rc.x) * MOUSE_SCALER;
-      output_data.gimbal.rol = 0.0f;
-
-      if (curr_rc.press_l != 0) {
-        output_data.launcher.isfire = true;
-      } else {
-        output_data.launcher.isfire = false;
-      }
-    } else {
-      /* 遥控器模式 */
-      output_data.chassis.operator_input.x =
-          2.0f * (static_cast<float>(curr_rc.ch_l_y) - VT13_CH_VALUE_MID) *
-          INV_FULL_RANGE;
-      output_data.chassis.operator_input.y =
-          2.0f * (static_cast<float>(curr_rc.ch_l_x) - VT13_CH_VALUE_MID) *
-          INV_FULL_RANGE;
-      output_data.chassis.operator_input.z =
-          2.0f * (static_cast<float>(curr_rc.ch_r_x) - VT13_CH_VALUE_MID) *
-          INV_FULL_RANGE;
-      output_data.chassis.self_define = CMD::ChasStat::NONE;
-
-      output_data.gimbal.yaw =
-          2.0f * (static_cast<float>(curr_rc.ch_r_x) - VT13_CH_VALUE_MID) *
-          INV_FULL_RANGE;
-      output_data.gimbal.pit =
-          2.0f * (static_cast<float>(curr_rc.ch_r_y) - VT13_CH_VALUE_MID) *
-          INV_FULL_RANGE;
-      output_data.gimbal.rol = 0.0f;
-
-      if (curr_rc.trig != 0) {
-        output_data.launcher.isfire = true;
-      } else {
-        output_data.launcher.isfire = false;
-      }
-    }
-
-    output_data.chassis_online = true;
-    output_data.gimbal_online = true;
-    output_data.ctrl_source = CMD::ControlSource::CTRL_SOURCE_RC;
-
-    this->last_data_ = curr_rc;
-
     return LibXR::ErrorCode::OK;
   }
-
-  /**
-   * @brief 离线安全输出
-   * @details 将控制量归零并标记离线，防止链路中断时保持危险状态
-   */
-  void Offline() {
-    this->cmd_data_.chassis.operator_input.x = 0;
-    this->cmd_data_.chassis.operator_input.y = 0;
-    this->cmd_data_.chassis.operator_input.z = 0;
-    this->cmd_data_.chassis.self_define = CMD::ChasStat::NONE;
-
-    this->cmd_data_.gimbal.yaw = 0;
-    this->cmd_data_.gimbal.pit = 0;
-    this->cmd_data_.gimbal.rol = 0;
-
-    this->cmd_data_.launcher.isfire = false;
-
-    this->cmd_data_.chassis_online = false;
-    this->cmd_data_.gimbal_online = false;
-
-    this->gimbal_enable_ = false;
-    this->fric_enable_ = false;
-    this->ai_mode_enable_ = false;
-    /* 清除拨轮触碰中间态，避免离线恢复后误触发短触/长触事件 */
-    this->dial_up_active_ = false;
-    this->dial_up_long_triggered_ = false;
-
-    this->last_data_ = Data{};
-    this->offline_latched_ = true;
-
-    this->cmd_->FeedRC(CMD::RCInputSource::RC_INPUT_VT13, this->cmd_data_);
-  }
-
- private:
   CMD* cmd_; /* CMD模块指针 */
   ControlSource ctrl_source_ = ControlSource::VT13_CTRL_SOURCE_SW;
 
@@ -557,7 +567,7 @@ class VT13 {
   CMD::Data cmd_data_{}; /* 命令数据 */
 
   /* 离线后只发送一次Offline，待下一次有效帧到来再解除 */
-  bool offline_latched_ = false;
+  bool offline_latched_ = true;
 
   bool dial_up_active_ = false;
   bool dial_up_long_triggered_ = false;
