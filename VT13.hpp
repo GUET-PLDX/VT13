@@ -556,16 +556,14 @@ class VT13 {
 
     return LibXR::ErrorCode::OK;
   }
-  CMD* cmd_; /* CMD模块指针 */
+  CMD::Data cmd_data_{}; /* 命令数据 */
+  Data last_data_{};     /* 上一帧数据 */
   ControlSource ctrl_source_ = ControlSource::VT13_CTRL_SOURCE_SW;
-
   bool gimbal_enable_ = false;
   bool fric_enable_ = false;
   bool ai_mode_enable_ = false;
 
-  Data last_data_{};     /* 上一帧数据 */
-  CMD::Data cmd_data_{}; /* 命令数据 */
-
+  LibXR::MillisecondTimestamp last_time_{}; /* 上次接收时间 */
   /* 离线后只发送一次Offline，待下一次有效帧到来再解除 */
   bool offline_latched_ = true;
 
@@ -573,12 +571,12 @@ class VT13 {
   bool dial_up_long_triggered_ = false;
   LibXR::MillisecondTimestamp dial_up_touch_start_{};
 
+  CMD* cmd_; /* CMD模块指针 */
   LibXR::UART* uart_;                       /* UART接口指针 */
   LibXR::Event vt13_event_;                 /* 事件处理器 */
   LibXR::Thread thread_uart_;               /* UART线程 */
   LibXR::Semaphore sem_;                    /* 读操作信号量 */
   LibXR::ReadOperation op_;                 /* 读操作（阻塞型） */
-  LibXR::MillisecondTimestamp last_time_{}; /* 上次接收时间 */
 
   /*--------------------------工具函数-------------------------------------------------*/
 
